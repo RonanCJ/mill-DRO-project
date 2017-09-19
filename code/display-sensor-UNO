@@ -1,0 +1,461 @@
+/***************************************************
+  This is a sketch for the Adafruit 1.8" SPI display.
+
+  This sketch works with the Adafruit 1.8" TFT shield
+  ----> https://www.adafruit.com/product/802
+
+  Check out the link above for  tutorials and wiring diagrams
+  This display uses SPI to communicate, 4 or 5 pins are required to
+  interface (RST is optional)
+****************************************************/
+#include <Adafruit_GFX.h>    // Core graphics library
+#include <Adafruit_ST7735.h> // Hardware-specific library
+#include <SPI.h>
+
+// Pins for the 1.8" TFT shield, will also work for breakout
+#define TFT_CS    10 // hardware SPI chip select pin
+#define TFT_RST   0  // you can also connect this to the Arduino reset
+                     // in which case, set this #define pin to 0!
+#define TFT_DC    8
+
+#define joyPin    3 //analogue pin for shield joystick
+
+/* for enabling after sensor works
+#define xPinAPulse 2 //pin A pulse for x is connected to (must be pin 2 or 3 on Uno)
+#define xPinBPulse 3 //pin B pulse for x is connected to (must be pin 2 or 3 on Uno)
+ */
+
+// Option 1 (recommended): Use the hardware SPI pins
+// (for UNO thats sclk = 13 and sid/mosi = 11) and pin 10 must be
+// an output. This is faster - also required if you want
+// to use the microSD card (see the image drawing example)
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS,  TFT_DC, TFT_RST);
+
+// Option 2: use any pins but noticeably slower
+// Needed if using Mega without wiring from shield 
+// to actual hardware SPI pins
+//#define TFT_SCLK 13   // set these to be whatever pins you like!
+//#define TFT_MOSI 11   // set these to be whatever pins you like!
+//Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
+
+// 8 basic 16 bit colours defined in Adafruit_ST7735.h
+//5,6,5 bit RGB colourspace
+#define BLACK     0x0000
+#define BLUE      0x001F
+#define RED       0xF800
+#define GREEN     0x07E0
+#define CYAN      0x07FF
+#define MAGENTA   0xF81F
+#define YELLOW    0xFFE0
+#define WHITE     0xFFFF
+// Additional colour definitions
+#define DARKBLUE  0x000F
+#define BLACKRED  0x2800
+#define DARKGREY  0x28A5
+
+//define joystick positions
+//assumes sd card is above joystick/"up"
+#define Neutral 0
+#define Press   1
+#define Up      2
+#define Down    3
+#define Right   4
+#define Left    5
+
+//cursor positions from pos0 to pos3 (left to right)
+#define Pos0  0 //0X
+#define Pos1  1 //0Y
+#define Pos2  2 //mm
+#define Pos3  3 //in
+
+//define unit modes
+#define mm  0
+#define in  1
+
+//define number of decimal places
+#define mmPrec 2
+#define inPrec 4
+
+//define screen pixel offsets for x and y position values
+//37 for 5 digits and negative sign, 55 for no neg (100s mm, inches uses only these)
+//55 for 4 digits and negative sign, 73 for no neg (10s mm)
+//73 for 3 digits and negative sign, 91 for no neg (1s mm)
+#define dig5XOffNeg 37
+#define dig5XOff    55
+#define dig4XOffNeg 55
+#define dig4XOff    73
+#define dig3XOffNeg 73
+#define dig3XOff    91
+#define xValYOff    1 
+#define yValYOff    25
+
+unsigned long lastDebounceTime = 0; //time in milliseconds since the debounce last triggered
+unsigned long lastDrawTime = 0; //time in milliseconds since the last draw
+const int debounceDelay = 300; //debounce delay in milliseconds
+const int drawDelay = 200; //draw delay in milliseconds
+int joy; //stores joystick position
+int cursorPos = Pos2;
+int unitMode = mm;
+float xVal; //stores position value
+float yVal;
+volatile byte draw = 1; //defines whether numbers should be drawn to screen or not
+volatile float xSensormm = 242.57;
+volatile float xSensorin = 9.55;
+volatile float ySensormm = -1.63;
+volatile float ySensorin = -0.0642;
+
+void setup() 
+{
+  Serial.begin(9600);
+  Serial.print("Hello! Adafruit ST7735 DRO test\n");
+
+  // Use this initializer if you're using a 1.8" TFT
+  tft.initR(INITR_BLACKTAB);   // initialize a ST7735S chip, black tab
+
+  Serial.println("init\n");
+
+  //pinMode(xPinAPulse, INPUT); int.0 for Uno
+  //pinMode(xPinBPulse, INPUT); int.1 for Uno
+  //attachInterrupt(digitalPinToInterrupt(xPinAPulse), xAPulseISR, CHANGE);
+  //attachInterrupt(digitalPinToInterrupt(xPinBPulse), xBPulseISR, CHANGE);
+  
+  tft.setTextWrap(false); // "true" prevents text from running off right edge
+  tft.setRotation(3); //orients display in landscape mode with SD card slot in top left
+  /*
+  tft.fillScreen(WHITE);
+  tft.setCursor(8,50);
+  tft.setTextColor(DARKBLUE);
+  tft.setTextSize(2);
+  tft.println("UBC");
+  tft.setCursor(8,66);
+  tft.setTextColor(BLACKRED);
+  tft.println("Supermileage");
+  delay(3000);*/ //ghetto bootup screen, should probably use millis() instead
+  
+  tft.fillScreen(BLACK);
+  tft.setTextColor(WHITE);
+  tft.setTextSize(3);
+  tft.setCursor(0,xValYOff);
+  tft.println("X:");
+
+  posScreenWrite('x');
+  
+  tft.setCursor(0,yValYOff);
+  tft.println("Y:");
+  
+  posScreenWrite('y');
+  
+  tft.setTextSize(3);
+  tft.fillRect(0, 49, 160, 3, WHITE);
+  tft.setCursor(27,61);
+  tft.println("0X");
+  tft.setCursor(117,61);
+  tft.print("mm");
+  tft.setCursor(27,97);
+  tft.println("0Y");
+  tft.setCursor(117,97);
+  tft.print("in");
+  drawUnderline(Pos2);
+  drawCursor(cursorPos);
+
+}
+
+void loop() 
+{
+  joy = Neutral; //set joystick position to neutral
+
+  //debounce code
+  if ((millis() - lastDebounceTime) > debounceDelay)
+  {
+    joy = CheckJoystick();
+    //get current time to use debounce delay only if actual input is recorded
+    if (joy != Neutral) lastDebounceTime = millis(); 
+  }
+  
+  switch (joy)
+  {
+    case Left:
+      Serial.println("Left");
+      clearCursor(cursorPos);
+      /* uncomment to rotate left through options */
+      if (cursorPos == Pos2) cursorPos = Pos0;
+      //else if (cursorPos == Pos0) cursorPos = Pos2;
+      //else if (cursorPos == Pos1) cursorPos = Pos3;
+      else if (cursorPos == Pos3) cursorPos = Pos1;
+      Serial.println(cursorPos);
+      drawCursor(cursorPos);
+      break;
+    case Right:
+      Serial.println("Right");
+      clearCursor(cursorPos);
+      /* uncomment to rotate right through options */
+      if (cursorPos == Pos0) cursorPos = Pos2;
+      //else if (cursorPos == Pos2) cursorPos = Pos0;
+      else if (cursorPos == Pos1) cursorPos = Pos3;
+      //else if (cursorPos == Pos3) cursorPos = Pos1;
+      Serial.println(cursorPos);
+      drawCursor(cursorPos);
+      break;
+    case Up:
+      Serial.println("Up");
+      clearCursor(cursorPos);
+      cursorPos--;
+      if (cursorPos < 0) cursorPos = 3;
+      Serial.println(cursorPos);
+      drawCursor(cursorPos); 
+      break;
+    case Down:
+      Serial.println("Down");
+      clearCursor(cursorPos);
+      cursorPos++;
+      if (cursorPos > 3) cursorPos = 0;
+      Serial.println(cursorPos);
+      drawCursor(cursorPos);
+      break;
+    case Press:
+      Serial.println("Press");
+      switch (cursorPos)
+      {
+        case Pos0: //if cursor is under Zero X option
+          xSensormm = 0;
+          xSensorin = 0;
+          //if xVal is zeroed sensor position value won't actually get zeroed
+          draw = 1;
+          break;
+        case Pos1: //if cursor is under Zero Y option
+          ySensormm = 0;
+          ySensorin = 0;
+          draw = 1;
+          break;
+        case Pos2: //if cursor is under mm option
+          clearUnderline(Pos3);
+          drawUnderline(Pos2);
+          unitMode = mm;
+          draw = 1;
+          break;
+        case Pos3:
+          clearUnderline(Pos2);
+          drawUnderline(Pos3);
+          unitMode = in;
+          draw = 1;
+          break;
+      }
+      break;
+  }
+
+  if (((millis() - lastDrawTime) > drawDelay) && (draw == 1))
+  {
+    lastDrawTime = millis();
+    posScreenWrite('x');
+    posScreenWrite('y');
+    draw = 0; //prevents function from drawing every drawDelay milliseconds when not commanded to
+  }
+}
+
+// function to check the joystick position
+int CheckJoystick()
+{
+  int joystickState = analogRead(joyPin);
+
+  if (joystickState < 50) return Left;
+  if (joystickState < 150) return Down;
+  if (joystickState < 250) return Press;
+  if (joystickState < 500) return Right;
+  if (joystickState < 650) return Up;
+  return Neutral;
+}
+
+//function to draw triangular cursor at a defined position
+void drawCursor(int cursorPos)
+{
+  switch (cursorPos)
+  {
+    case Pos0:
+      tft.fillTriangle(3, 64, 3, 78, 20, 71, WHITE);
+      //tft.fillTriangle(11, 81, 21, 81, 11, 68, WHITE); //needed for symmetry if base of triangle is even
+      break;
+    case Pos1:
+      tft.fillTriangle(3, 100, 3, 114, 20, 107, WHITE);
+      //tft.fillTriangle(47, 81, 57, 81, 47, 68, WHITE); //needed for symmetry if base of triangle is even
+      break;
+    case Pos2:
+      tft.fillTriangle(93, 64, 93, 78, 110, 71, WHITE);
+      //tft.fillTriangle(83, 81, 93, 81, 83, 68, WHITE); //needed for symmetry if base of triangle is even
+      break;
+    case Pos3:
+      tft.fillTriangle(93, 100, 93, 114, 110, 107, WHITE);
+      //tft.fillTriangle(119, 81, 129, 81, 119, 68, WHITE); //needed for symmetry if base of triangle is even
+      break;
+  }
+}
+
+//function to clear the cursor at a given position
+void clearCursor(int cursorPos)
+{
+  switch (cursorPos)
+  {
+    case Pos0:
+      tft.fillRect(0, 61, 27, 21, BLACK);
+      break;
+    case Pos1:
+      tft.fillRect(0, 97, 27, 21, BLACK);
+      break;
+    case Pos2:
+      tft.fillRect(90, 61, 27, 21, BLACK);
+      break;
+    case Pos3:
+      tft.fillRect(90, 97, 27, 21, BLACK);
+      break;
+  }
+}
+
+//function to underline mm or in
+void drawUnderline(int cursorPos)
+{
+  switch (cursorPos)
+  {
+    case Pos2:
+      tft.fillRect(117, 85, 33, 3, WHITE);
+      break;
+    case Pos3:
+      tft.fillRect(117, 121, 33, 3, WHITE);
+      break;
+  }
+}
+
+//function to clear underline from mm or in
+void clearUnderline(int cursorPos)
+{
+  switch (cursorPos)
+  {
+    case Pos2:
+      tft.fillRect(117, 85, 33, 3, BLACK);
+      break;
+    case Pos3:
+      tft.fillRect(117, 121, 33, 3, BLACK);
+      break;
+  }
+}
+
+//function to write calculated positions to screen
+void posScreenWrite(char axis)
+{
+  tft.setTextSize(3);
+  tft.setTextColor(WHITE, BLACK);
+  int decPrec;
+  if (unitMode == in)
+  {
+    decPrec = inPrec;
+    /* Enable the noInterrupts/SREG lines only if there are problems with xSensor and ySensor
+     * being written by ISRs while they are being read. Enabling the code may result in
+     * interrupts not triggering on time when the magnetic scale is moving, resulting in a
+     * measurement event occuring after it was supposed to and thus a loss of accuracy */
+    //byte oldSREG = SREG; //remember if interrupts are on or off
+    //noInterrupts(); //turns interrupts off
+    //note: processor status register name (SREG) can be different on different processors
+    //consult the datasheets
+    /* Enable xVal and yVal lines after the sensor is connected */
+    xVal = xSensorin;
+    yVal = ySensorin;
+    //SREG = oldSREG; //restores previous state of interrupts
+    switch (axis)
+    {
+      case 'x':
+        tft.fillRect(37, xValYOff, 54, 24, BLACK);
+        if (xVal < 0)
+        {
+          tft.setCursor(dig5XOffNeg, xValYOff);
+        }
+        else
+        {
+          tft.setCursor(dig5XOff, xValYOff);
+        }
+        tft.print(xVal, decPrec);
+        break;
+      case 'y':
+        tft.fillRect(37, yValYOff, 54, 24, BLACK);
+        if (yVal < 0)
+        {
+          tft.setCursor(dig5XOffNeg, yValYOff);
+        }
+        else
+        {
+          tft.setCursor(dig5XOff, yValYOff);
+        }
+        tft.print(yVal, decPrec);
+        break;
+    }
+  }
+  else
+  {
+    decPrec = mmPrec;
+    /* Enable the noInterrupt/SREG code only if there are problems with xSensor and ySensor
+     * being written by ISRs while they are being read. Enabling the code may result in
+     * interrupts not triggering on time when the magnetic scale is moving, resulting in a
+     * measurement event occuring after it was supposed to and thus a loss of accuracy */
+    //byte oldSREG = SREG; //remember if interrupts are on or off
+    //noInterrupts(); //turns interrupts off
+    //note: processor status register name (SREG) can be different on different processors
+    //consult the datasheets
+    /* Enable xVal and yVal lines after the sensor is connected */
+    xVal = xSensormm;
+    yVal = ySensormm;
+    //SREG = oldSREG; //restores previous state of interrupts
+    switch(axis)
+    {
+      case 'x':
+        tft.fillRect(37, xValYOff, 54, 24, BLACK);
+        /* if/else statements to decide where to write number based on
+         * number of digits and presence of neg sign */
+        if (xVal <= -100) tft.setCursor(dig5XOffNeg, xValYOff);
+        else if (xVal <= -10) tft.setCursor(dig4XOffNeg, xValYOff);
+        else if (xVal < 0) tft.setCursor(dig3XOffNeg, xValYOff);
+        else if (xVal < 10) tft.setCursor(dig3XOff, xValYOff);
+        else if (xVal < 100) tft.setCursor(dig4XOff, xValYOff);
+        else tft.setCursor(dig5XOff, xValYOff);
+        tft.print(xVal, decPrec);
+        break;
+      case 'y':
+        tft.fillRect(37, yValYOff, 54, 24, BLACK);
+        if (yVal <= -100) tft.setCursor(dig5XOffNeg, yValYOff);
+        else if (yVal <= -10) tft.setCursor(dig4XOffNeg, yValYOff);
+        else if (yVal < 0) tft.setCursor(dig3XOffNeg, yValYOff);
+        else if (yVal < 10) tft.setCursor(dig3XOff, yValYOff);
+        else if (yVal < 100) tft.setCursor(dig4XOff, yValYOff);
+        else tft.setCursor(dig5XOff, yValYOff);
+        tft.print(yVal, decPrec);
+        break;
+    }
+  }
+}
+
+/* ISRs for one magnetic sensor
+void xAPulseISR()
+{
+  if (digitalRead(xPinAPulse) == digitalRead(xPinBPulse)) //moving left to right, B leads A
+  {
+    xSensormm += 0.002;
+    xSensorin += 0.000077;
+  }
+  else
+  {
+    xSensormm -= 0.002;
+    xSensorin -= 0.000077;
+  }
+  draw = 1;
+}
+
+void xBPulseISR()
+{
+  if (digitalRead(xPinBPulse) != digitalRead(xPinAPulse)) //moving left to right, B leads A
+  {
+    xSensormm += 0.002;
+    xSensorin += 0.000077;
+  }
+  else
+  {
+    xSensormm -= 0.002;
+    xSensorin -= 0.000077;
+  }
+  draw = 1;
+} */ //position values assume that second sensor and ISR will be added later
